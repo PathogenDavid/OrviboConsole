@@ -1,0 +1,114 @@
+﻿@page "/"
+@implements IDisposable
+
+@using OrviboControl
+@inject PlugEnumerator PlugEnumerator
+@inject PlugMetadataService PlugMetadata
+@inject PlugSchedulerService PlugScheduler
+
+<h1>Plugs <button @onclick="Refresh">Discover</button></h1>
+
+<table>
+	<thead>
+		<tr>
+			<th>Name</th>
+			<th>MAC Address</th>
+			<th>Firmware</th>
+			<th style="width: 150px; overflow: hidden">Last Seen</th>
+			<th>Schedule</th>
+			<th>Status</th>
+		</tr>
+	</thead>
+	<tbody>
+		@if (PlugEnumerator.Plugs.Count == 0)
+		{
+			<tr>
+				<td colspan="4" style="text-align:center">No plugs connected</td>
+			</tr>
+		}
+		else
+		{
+			PlugMetadata.EnsureAllPlugsExist(PlugEnumerator.Plugs.Keys);
+
+			@foreach (MacAddress plugMacAddress in PlugMetadata.MacAddresses)
+			{
+				PlugMetadata metadata = PlugMetadata.GetMetadata(plugMacAddress);
+				Plug? plug;
+				if (!PlugEnumerator.Plugs.TryGetValue(plugMacAddress, out plug))
+				{ plug = null; }
+
+				string lastSeenStatus = "Offline";
+
+				if (plug is not null)
+				{
+					TimeSpan timeSinceSeen = DateTime.Now - plug.LastSeen;
+					int roundedSeconds = (int)Math.Round(timeSinceSeen.TotalSeconds);
+
+					if (roundedSeconds < 5)
+					{ lastSeenStatus = "Just now"; }
+					else if (timeSinceSeen.TotalMinutes < 30.0)
+					{ lastSeenStatus = $"{roundedSeconds} seconds ago"; }
+					else
+					{ lastSeenStatus = "Forever ago"; }
+				}
+
+				<tr>
+					<td><input @bind-value="metadata.Name" /></td>
+					<td>@plugMacAddress</td>
+					<td>@(plug?.FirmwareVersion ?? "Unknown")</td>
+					<td>@lastSeenStatus</td>
+					<td>
+						<input type="checkbox" @bind-value="metadata.ScheduleEnabled" />
+						<input @bind-value="metadata.OnTimeString" style="width: 5em" />
+						-
+						<input @bind-value="metadata.OffTimeString" style="width: 5em" />
+
+						@if (PlugScheduler.IsOverridden(plugMacAddress))
+						{ <span style="color: red">*</span> }
+					</td>
+
+					@if (plug is null)
+					{ <td><button @onclick="() => PlugMetadata.Forget(plugMacAddress)">Forget</button></td> }
+					else if (plug.IsPowered)
+					{ <td><button @onclick="() => SetPowerState(plug, false)">On</button></td> }
+					else
+					{ <td><button @onclick="() => SetPowerState(plug, true)">Off</button></td> }
+				</tr>
+			}
+		}
+	</tbody>
+</table>
+
+<div style="text-align: center; margin-top: 1.5em;">
+	<button @onclick="() => PlugMetadata.CommitChanges()">Commit Changes</button>
+	<button @onclick="() => PlugMetadata.DiscardChanges()">Discard Changes</button>
+	<button @onclick="() => PlugScheduler.ClearOverrides()">Clear Overrides</button>
+</div>
+
+@code
+{
+	protected override void OnInitialized()
+	{
+		PlugEnumerator.PlugsChanged += PlugsChanged;
+		PlugMetadata.ChangesComitted += PlugsChanged;
+		PlugEnumerator.DiscoverPlugs();
+	}
+
+	private void Refresh()
+		=> PlugEnumerator.DiscoverPlugs();
+
+	private void PlugsChanged()
+		=> InvokeAsync(StateHasChanged);
+
+	private void SetPowerState(Plug plug, bool powerState)
+	{
+		PlugScheduler.NoteManualOverride(plug.MacAddress);
+		plug.SetPowerState(powerState);
+	}
+
+	public void Dispose()
+	{
+		PlugMetadata.ChangesComitted -= PlugsChanged;
+		PlugEnumerator.PlugsChanged -= PlugsChanged;
+	}
+}
